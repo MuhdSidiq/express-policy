@@ -1,0 +1,230 @@
+// prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// AUTHENTICATION & USERS
+// ============================================
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  password  String   // bcrypt hashed
+  firstName String?
+  lastName  String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  roles     UserRole[]
+  sessions  Session[]
+  auditLogs AuditLog[]
+  orders    Order[]
+
+  @@map("users")
+  @@index([email])
+  @@index([isActive])
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  sid       String   @unique // Session ID from express-session
+  sess      Json     // Session data
+  expire    DateTime // Expiration timestamp
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([expire])
+  @@index([userId])
+  @@map("sessions")
+}
+
+// ============================================
+// RBAC + POLICY SYSTEM
+// ============================================
+
+model Role {
+  id          String   @id @default(cuid())
+  name        String   @unique  // 'admin', 'finance', 'intern'
+  description String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  users       UserRole[]
+  policies    RolePolicy[]
+
+  @@map("roles")
+  @@index([name])
+  @@index([isActive])
+}
+
+model Policy {
+  id          String   @id @default(cuid())
+  name        String   @unique  // 'ViewAllOrders', 'ManageOwnOrders'
+  description String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  roles       RolePolicy[]
+  permissions Permission[]
+
+  @@map("policies")
+  @@index([name])
+  @@index([isActive])
+}
+
+model Permission {
+  id         String   @id @default(cuid())
+  policyId   String
+
+  // CASL Ability fields
+  action     String   // 'create', 'read', 'update', 'delete', 'manage'
+  subject    String   // 'Order', 'Product', 'User', 'all'
+  fields     String[] // ['status', 'price'] or [] for all fields
+  conditions Json?    // MongoDB-style conditions: { userId: '{{currentUser.id}}' }
+  inverted   Boolean  @default(false) // true = "cannot", false = "can"
+  reason     String?  // Human-readable explanation
+
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  // Relations
+  policy     Policy   @relation(fields: [policyId], references: [id], onDelete: Cascade)
+
+  @@map("permissions")
+  @@index([policyId])
+  @@index([subject, action])
+}
+
+// Junction Tables
+
+model UserRole {
+  userId     String
+  roleId     String
+  assignedAt DateTime @default(now())
+  assignedBy String?  // User ID who assigned this role
+
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role       Role     @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, roleId])
+  @@map("user_roles")
+  @@index([userId])
+  @@index([roleId])
+}
+
+model RolePolicy {
+  roleId     String
+  policyId   String
+  assignedAt DateTime @default(now())
+
+  role       Role     @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  policy     Policy   @relation(fields: [policyId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, policyId])
+  @@map("role_policies")
+  @@index([roleId])
+  @@index([policyId])
+}
+
+// ============================================
+// BUSINESS ENTITIES
+// ============================================
+
+model Product {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  price       Decimal  @db.Decimal(10, 2)
+  stock       Int      @default(0)
+  sku         String?  @unique
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  orderItems  OrderItem[]
+
+  @@map("products")
+  @@index([sku])
+  @@index([isActive])
+}
+
+model Order {
+  id          String      @id @default(cuid())
+  orderNumber String      @unique
+  userId      String
+  status      OrderStatus @default(PENDING)
+  totalAmount Decimal     @db.Decimal(10, 2)
+  notes       String?
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  user        User        @relation(fields: [userId], references: [id])
+  items       OrderItem[]
+
+  @@map("orders")
+  @@index([userId])
+  @@index([status])
+  @@index([orderNumber])
+}
+
+model OrderItem {
+  id        String   @id @default(cuid())
+  orderId   String
+  productId String
+  quantity  Int
+  price     Decimal  @db.Decimal(10, 2) // Price at time of order
+
+  order     Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product   Product  @relation(fields: [productId], references: [id])
+
+  @@map("order_items")
+  @@index([orderId])
+  @@index([productId])
+}
+
+enum OrderStatus {
+  PENDING
+  CONFIRMED
+  PROCESSING
+  SHIPPED
+  DELIVERED
+  CANCELLED
+  REFUNDED
+}
+
+// ============================================
+// AUDIT LOGS
+// ============================================
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  userId     String?
+  action     String   // 'CREATE_ROLE', 'UPDATE_PERMISSION', 'DELETE_POLICY'
+  entity     String   // 'Role', 'Policy', 'Permission', 'User'
+  entityId   String?
+  changes    Json?    // { before: {...}, after: {...} }
+  ipAddress  String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+
+  user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@map("audit_logs")
+  @@index([userId])
+  @@index([entity, entityId])
+  @@index([createdAt])
+  @@index([action])
+}

@@ -1,0 +1,54 @@
+version: '3.9'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: permission-system-db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: permission_system
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - permission-network
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: permission-system-backend
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/permission_system
+      SESSION_SECRET: dev-secret-key-change-in-production-min-32-chars
+      SESSION_MAX_AGE: 86400000
+      PORT: 3000
+      BCRYPT_ROUNDS: 12
+      ALLOWED_ORIGINS: http://localhost:5173
+      LOG_LEVEL: debug
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+    command: sh -c "npx prisma generate && npx prisma migrate deploy && npm run dev"
+    networks:
+      - permission-network
+
+volumes:
+  postgres_data:
+
+networks:
+  permission-network:
+    driver: bridge
